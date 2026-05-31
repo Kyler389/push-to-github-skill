@@ -4,6 +4,7 @@
 #   --dry-run    只检查环境，不执行推送
 #   --yes        自动确认所有提示（适合自动化/CI）
 #   --ssh        优先使用 SSH 方式（需提前配置好 SSH key）
+#   --proxy URL  指定代理地址（如 http://127.0.0.1:7897）
 
 set -e
 
@@ -16,23 +17,31 @@ NC='\033[0m'
 DRY_RUN=false
 AUTO_YES=false
 USE_SSH=false
+PROXY_URL=""
 REMOTE_ARG=""
 
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --dry-run) DRY_RUN=true ;;
         --yes) AUTO_YES=true ;;
         --ssh) USE_SSH=true ;;
+        --proxy)
+            PROXY_URL="$2"
+            shift
+            ;;
         --help|-h)
             echo "GitHub 推送 Skill"
-            echo "用法: $0 [--dry-run] [--yes] [--ssh] [远程仓库URL]"
+            echo "用法: $0 [--dry-run] [--yes] [--ssh] [--proxy URL] [远程仓库URL]"
             echo "  --dry-run   只检查环境，不执行推送"
             echo "  --yes       自动确认所有提示"
             echo "  --ssh       优先使用 SSH 方式推送"
+            echo "  --proxy     指定代理地址（如 http://127.0.0.1:7897）"
             exit 0
             ;;
-        *) REMOTE_ARG="$arg" ;;
+        -*) echo "未知选项: $1"; exit 1 ;;
+        *) REMOTE_ARG="$1" ;;
     esac
+    shift
 done
 
 DEFAULT_REPO_NAME=$(basename "$(pwd)")
@@ -51,13 +60,34 @@ confirm() {
 
 # ── 网络诊断 ──
 check_network() {
+    local proxy="$1"
     if command -v curl >/dev/null 2>&1; then
-        curl -sI https://github.com --connect-timeout 8 >/dev/null 2>&1
+        if [ -n "$proxy" ]; then
+            curl -sI https://github.com --connect-timeout 8 --proxy "$proxy" >/dev/null 2>&1
+        else
+            curl -sI https://github.com --connect-timeout 8 >/dev/null 2>&1
+        fi
     elif command -v wget >/dev/null 2>&1; then
-        wget -q --spider --timeout=8 https://github.com >/dev/null 2>&1
+        if [ -n "$proxy" ]; then
+            wget -q --spider --timeout=8 -e "https_proxy=$proxy" https://github.com >/dev/null 2>&1
+        else
+            wget -q --spider --timeout=8 https://github.com >/dev/null 2>&1
+        fi
     else
         return 0
     fi
+}
+
+# ── 自动检测本地代理 ──
+detect_proxy() {
+    local ports=("7897" "7890" "1080" "8080" "10808" "10809")
+    for port in "${ports[@]}"; do
+        if check_network "http://127.0.0.1:$port"; then
+            echo "http://127.0.0.1:$port"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # ── 远程仓库可达性检查 ──
@@ -187,24 +217,46 @@ if [ "$DRY_RUN" = true ]; then
     echo -e "${BLUE}=== Dry Run 检查完成 ===${NC}"
     echo -e "远程仓库: ${REMOTE_URL:-(待设置)}"
     has_ssh_key && echo -e "SSH key: ${GREEN}已检测到${NC}（可用 --ssh 优先使用）"
+    DETECTED=$(detect_proxy 2>/dev/null || echo "")
+    [ -n "$DETECTED" ] && echo -e "本地代理: ${GREEN}检测到 ${DETECTED}${NC}"
     exit 0
 fi
 
 # 5. 网络检查
 echo ""
 if ! check_network; then
-    echo -e "${RED}✗ 无法连接到 GitHub (https://github.com)${NC}"
-    echo -e "${YELLOW}可能原因:${NC}"
-    echo "  • 网络未连接或防火墙阻止"
-    echo "  • DNS 解析异常"
-    echo "  • 若在国内，GitHub 可能间歇性不可达，建议稍后重试或配置代理"
-    echo ""
-    echo "配置代理示例:"
-    echo "  git config --global http.proxy  http://127.0.0.1:7890"
-    echo "  git config --global https.proxy http://127.0.0.1:7890"
-    exit 1
+    echo -e "${RED}✗ 无法直连 GitHub (https://github.com)${NC}"
+
+    # 尝试自动检测本地代理
+    DETECTED_PROXY=$(detect_proxy || echo "")
+    if [ -n "$DETECTED_PROXY" ]; then
+        echo ""
+        echo -e "${GREEN}✓ 检测到可用代理: ${DETECTED_PROXY}${NC}"
+        if confirm "是否使用该代理推送"; then
+            PROXY_URL="$DETECTED_PROXY"
+            git config --global http.proxy "$PROXY_URL"
+            git config --global https.proxy "$PROXY_URL"
+            echo -e "${GREEN}✓ 已配置代理${NC}"
+        else
+            echo -e "${YELLOW}跳过代理配置${NC}"
+        fi
+    else
+        echo -e "${YELLOW}可能原因:${NC}"
+        echo "  • 网络未连接或防火墙阻止"
+        echo "  • 若在国内，GitHub 可能间歇性不可达"
+        echo ""
+        echo "手动配置代理:"
+        echo "  ./push-to-github.sh --proxy http://127.0.0.1:7897"
+        echo "  或: git config --global http.proxy http://127.0.0.1:7897"
+        echo ""
+        if ! confirm "是否仍尝试推送"; then
+            echo -e "${YELLOW}已取消${NC}"
+            exit 1
+        fi
+    fi
+else
+    echo -e "${GREEN}✓ GitHub 网络连通正常${NC}"
 fi
-echo -e "${GREEN}✓ GitHub 网络连通正常${NC}"
 
 # 6. 检查远程仓库是否存在
 if ! check_remote_exists "$REMOTE_URL"; then
@@ -278,10 +330,14 @@ if [ $PUSH_EXIT -ne 0 ]; then
 
     if echo "$PUSH_OUTPUT" | grep -qi "repository not found"; then
         echo -e "${YELLOW}提示: 仓库不存在，请先创建${NC}"
+        echo "  https://github.com/new"
     elif echo "$PUSH_OUTPUT" | grep -qi "authentication failed\|permission denied\|403"; then
         echo -e "${YELLOW}提示: 认证失败，检查凭据或仓库权限${NC}"
     elif echo "$PUSH_OUTPUT" | grep -qi "could not resolve\|connection refused\|timeout\|failed to connect"; then
-        echo -e "${YELLOW}提示: 网络问题，稍后重试或配置代理${NC}"
+        echo -e "${YELLOW}提示: 网络阻断，建议:${NC}"
+        echo "  1. 稍后重试"
+        echo "  2. 配置代理: ./push-to-github.sh --proxy http://127.0.0.1:7897"
+        echo "  3. 脚本会自动扫描 7897/7890/1080/8080 等常见代理端口"
     fi
     exit 1
 fi

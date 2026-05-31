@@ -1,7 +1,7 @@
 {
   "name": "push-to-github",
-  "version": "2.0",
-  "description": "将当前项目快速推送到 GitHub 仓库，支持网络诊断、远程可达性检查和 SSH 自动检测",
+  "version": "2.1",
+  "description": "将当前项目快速推送到 GitHub 仓库，支持网络诊断、代理自动检测、远程可达性检查和 SSH 自动检测",
   "triggers": [
     "推送到 GitHub",
     "上传到 GitHub",
@@ -20,7 +20,8 @@
     "with_url": "./push-to-github.sh https://github.com/username/repo.git",
     "dry_run": "./push-to-github.sh --dry-run",
     "auto": "./push-to-github.sh --yes https://github.com/username/repo.git",
-    "ssh": "./push-to-github.sh --ssh"
+    "ssh": "./push-to-github.sh --ssh",
+    "with_proxy": "./push-to-github.sh --proxy http://127.0.0.1:7897"
   },
   "flow": [
     "检查/初始化本地 git 仓库",
@@ -29,21 +30,27 @@
     "若无远程仓库，询问 GitHub 用户名和仓库名并拼接 URL（支持 --ssh 优先 SSH）",
     "保存远程地址到本地 git 配置",
     "检查 GitHub 网络连通性（curl/wget）",
+    "若无法直连，自动扫描本地常见代理端口（7897/7890/1080/8080/10808/10809）",
     "检查远程仓库是否真实存在（git ls-remote）",
     "自动 git add -A 并提交",
     "git push -u origin 当前分支",
-    "推送失败时自动分析错误原因并给出提示"
+    "推送失败时自动分析错误原因并给出具体解决建议"
   ],
   "credentials": {
     "method": "Git Credential Manager (manager)",
     "status": "已全局启用",
     "note": "首次推送时输入一次 GitHub 账号密码，之后自动记住。已修复 manager-core 重命名警告。"
   },
+  "proxy": {
+    "auto_detect_ports": ["7897", "7890", "1080", "8080", "10808", "10809"],
+    "user_config": "http://127.0.0.1:7897 (Clash Verge)",
+    "cli_flag": "--proxy http://127.0.0.1:7897"
+  },
   "known_issues": [
     {
       "issue": "GitHub 网络间歇性阻断（国内常见）",
-      "symptom": "Failed to connect to github.com port 443",
-      "solution": "稍后重试，或配置代理: git config --global http.proxy http://127.0.0.1:7890"
+      "symptom": "Failed to connect to github.com port 443 / Error in the HTTP2 framing layer",
+      "solution": "脚本会自动扫描本地代理端口。若检测到可用代理会提示使用。也可手动: ./push-to-github.sh --proxy http://127.0.0.1:7897"
     },
     {
       "issue": "仓库不存在",
