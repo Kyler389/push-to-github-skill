@@ -78,16 +78,82 @@ check_network() {
     fi
 }
 
-# ── 自动检测本地代理 ──
-detect_proxy() {
+# ── 扫描本地代理端口 ──
+# 返回所有检测到的可用代理，每行一个
+scan_proxies() {
     local ports=("7897" "7890" "1080" "8080" "10808" "10809")
     for port in "${ports[@]}"; do
         if check_network "http://127.0.0.1:$port"; then
             echo "http://127.0.0.1:$port"
-            return 0
         fi
     done
-    return 1
+}
+
+# ── 让用户选择代理 ──
+select_proxy() {
+    local proxies=()
+    readarray -t proxies < <(scan_proxies)
+
+    echo -e "${BLUE}扫描本地代理端口...${NC}"
+    echo ""
+
+    if [ ${#proxies[@]} -eq 0 ]; then
+        echo -e "${YELLOW}未检测到可用代理${NC}"
+        echo "扫描端口: 7897(Clash) 7890(V2RayN) 1080(SS) 8080 10808/10809"
+        echo ""
+    else
+        echo -e "${GREEN}检测到以下可用代理:${NC}"
+        local i=1
+        for p in "${proxies[@]}"; do
+            echo "  [$i] $p"
+            ((i++))
+        done
+        echo ""
+    fi
+
+    echo "请选择代理:"
+    if [ ${#proxies[@]} -gt 0 ]; then
+        echo "  [1-${#proxies[@]}] 使用对应代理"
+    fi
+    echo "  [c] 手动输入代理地址"
+    echo "  [s] 使用 SOCKS5 代理 (如 127.0.0.1:7897)"
+    echo "  [n] 不使用代理，稍后重试"
+    echo ""
+
+    while true; do
+        read -rp "你的选择: " choice
+        case "$choice" in
+            [1-9])
+                local idx=$((choice - 1))
+                if [ "$idx" -ge 0 ] && [ "$idx" -lt ${#proxies[@]} ]; then
+                    echo "${proxies[$idx]}"
+                    return 0
+                else
+                    echo -e "${RED}无效选项${NC}"
+                fi
+                ;;
+            c|C)
+                read -rp "请输入代理地址 (如 http://127.0.0.1:7897): " manual_proxy
+                if [ -n "$manual_proxy" ]; then
+                    echo "$manual_proxy"
+                    return 0
+                fi
+                ;;
+            s|S)
+                read -rp "请输入 SOCKS5 代理地址 (如 127.0.0.1:7897): " socks_proxy
+                if [ -n "$socks_proxy" ]; then
+                    echo "socks5://${socks_proxy}"
+                    return 0
+                fi
+                ;;
+            n|N)
+                return 1
+                ;;
+            *)
+                echo -e "${RED}无效选项，请重新输入${NC}"
+                ;;
+        esac
+    done
 }
 
 # ── 远程仓库可达性检查 ──
@@ -217,8 +283,13 @@ if [ "$DRY_RUN" = true ]; then
     echo -e "${BLUE}=== Dry Run 检查完成 ===${NC}"
     echo -e "远程仓库: ${REMOTE_URL:-(待设置)}"
     has_ssh_key && echo -e "SSH key: ${GREEN}已检测到${NC}（可用 --ssh 优先使用）"
-    DETECTED=$(detect_proxy 2>/dev/null || echo "")
-    [ -n "$DETECTED" ] && echo -e "本地代理: ${GREEN}检测到 ${DETECTED}${NC}"
+    PROXY_LIST=$(scan_proxies 2>/dev/null || true)
+    if [ -n "$PROXY_LIST" ]; then
+        echo -e "本地代理: ${GREEN}检测到以下可用${NC}"
+        echo "$PROXY_LIST" | sed 's/^/  /'
+    else
+        echo -e "本地代理: ${YELLOW}未检测到${NC}"
+    fi
     exit 0
 fi
 
@@ -226,30 +297,18 @@ fi
 echo ""
 if ! check_network; then
     echo -e "${RED}✗ 无法直连 GitHub (https://github.com)${NC}"
+    echo -e "${YELLOW}可能原因: 网络阻断或防火墙阻止${NC}"
+    echo ""
 
-    # 尝试自动检测本地代理
-    DETECTED_PROXY=$(detect_proxy || echo "")
-    if [ -n "$DETECTED_PROXY" ]; then
-        echo ""
-        echo -e "${GREEN}✓ 检测到可用代理: ${DETECTED_PROXY}${NC}"
-        if confirm "是否使用该代理推送"; then
-            PROXY_URL="$DETECTED_PROXY"
-            git config --global http.proxy "$PROXY_URL"
-            git config --global https.proxy "$PROXY_URL"
-            echo -e "${GREEN}✓ 已配置代理${NC}"
-        else
-            echo -e "${YELLOW}跳过代理配置${NC}"
-        fi
+    # 进入代理选择流程
+    SELECTED_PROXY=$(select_proxy)
+    if [ $? -eq 0 ] && [ -n "$SELECTED_PROXY" ]; then
+        PROXY_URL="$SELECTED_PROXY"
+        git config --global http.proxy "$PROXY_URL"
+        git config --global https.proxy "$PROXY_URL"
+        echo -e "${GREEN}✓ 已配置代理: ${PROXY_URL}${NC}"
     else
-        echo -e "${YELLOW}可能原因:${NC}"
-        echo "  • 网络未连接或防火墙阻止"
-        echo "  • 若在国内，GitHub 可能间歇性不可达"
-        echo ""
-        echo "手动配置代理:"
-        echo "  ./push-to-github.sh --proxy http://127.0.0.1:7897"
-        echo "  或: git config --global http.proxy http://127.0.0.1:7897"
-        echo ""
-        if ! confirm "是否仍尝试推送"; then
+        if ! confirm "不使用代理，是否仍尝试推送"; then
             echo -e "${YELLOW}已取消${NC}"
             exit 1
         fi
