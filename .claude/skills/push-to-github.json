@@ -1,0 +1,36 @@
+{
+  "name": "push-to-github",
+  "description": "将当前项目快速推送到 GitHub 仓库",
+  "triggers": [
+    "推送到 GitHub",
+    "上传到 GitHub",
+    "发布到 GitHub",
+    "github 推送",
+    "push to github"
+  ],
+  "script": "./push-to-github.sh",
+  "requirements": [
+    "git",
+    "Git Credential Manager (Windows 已内置)"
+  ],
+  "usage": {
+    "interactive": "./push-to-github.sh",
+    "with_url": "./push-to-github.sh https://github.com/username/repo.git",
+    "dry_run": "./push-to-github.sh --dry-run",
+    "auto": "./push-to-github.sh --yes https://github.com/username/repo.git"
+  },
+  "flow": [
+    "检查/初始化本地 git 仓库",
+    "检查/配置 git 用户名和邮箱",
+    "检查现有远程仓库 origin",
+    "若无远程仓库，询问 GitHub 用户名和仓库名并拼接 URL",
+    "保存远程地址到本地 git 配置",
+    "自动 git add -A 并提交",
+    "git push -u origin 当前分支"
+  ],
+  "credentials": {
+    "method": "Git Credential Manager (manager-core)",
+    "status": "已全局启用",
+    "note": "首次推送时输入一次 GitHub 账号密码，之后自动记住"
+  }
+}
